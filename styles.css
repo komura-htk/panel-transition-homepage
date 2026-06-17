@@ -1,0 +1,1053 @@
+/* Drives the revealed background between fully gray (0) and full colour (1),
+   set from JS in step with how many tiles are open. Registered so it can be
+   interpolated, giving a seamless ramp between the discrete tile-open steps. */
+@property --restore {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+:root {
+  --current-bg: #ece8dc;
+  --current-fg: #2f3630;
+  --next-bg: #40584f;
+  --next-fg: #edf1e8;
+  --current-grid: #cac8bd;
+  --next-grid: #5f746b;
+  --grid-line-width: 1px;
+  --grid-radius: 10px;
+  /* Lowest contrast of the revealed background while fully desaturated. */
+  --desat-contrast: 0.45;
+  /* Smoothing applied between open-tile-driven restore steps. */
+  --restore-ms: 280ms;
+  /* How long the dedicated grid takes to fade out on the contact screen. */
+  --grid-hide-ms: 700ms;
+  --title-intro-x: 0px;
+  --title-intro-y: 0px;
+  --title-intro-scale: 1;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  color: var(--current-fg);
+  background: var(--current-bg);
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+.stage {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  isolation: isolate;
+  cursor: default;
+  background: var(--current-bg);
+  --restore: 0;
+  transition: --restore var(--restore-ms) linear;
+}
+
+.stage.is-restore-instant {
+  transition: none;
+}
+
+.screen {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+
+.screen-next {
+  z-index: 0;
+  color: var(--next-fg);
+  background: var(--next-bg);
+  filter: grayscale(calc(1 - var(--restore)))
+    contrast(calc(var(--desat-contrast) * (1 - var(--restore)) + var(--restore)));
+  will-change: filter;
+}
+
+.screen-title {
+  margin: 0;
+  max-width: min(92vw, 1280px);
+  padding: 0 4vw;
+  text-align: center;
+  font-size: clamp(4.25rem, 15vw, 14rem);
+  font-weight: 800;
+  line-height: 0.9;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  user-select: none;
+}
+
+.screen-title-next {
+  color: var(--next-fg);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.panel-layer {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(var(--grid-cols), 1fr);
+  grid-template-rows: repeat(var(--grid-rows), 1fr);
+  overflow: hidden;
+  background: transparent;
+}
+
+.panel-layer-next {
+  z-index: 1;
+  pointer-events: none;
+  filter: grayscale(calc(1 - var(--restore)))
+    contrast(calc(var(--desat-contrast) * (1 - var(--restore)) + var(--restore)));
+  will-change: filter;
+}
+
+.panel-layer-current {
+  z-index: 2;
+}
+
+.grid-line-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: repeat(var(--grid-cols), 1fr);
+  grid-template-rows: repeat(var(--grid-rows), 1fr);
+  overflow: hidden;
+  color: var(--current-grid);
+  pointer-events: none;
+  opacity: 1;
+  transition:
+    opacity var(--grid-hide-ms) ease,
+    color var(--restore-ms) linear;
+  will-change: color, opacity;
+}
+
+.grid-line-cell {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  /* Clip the corner-filling flood (below) to this cell. */
+  overflow: hidden;
+}
+
+/* A transparent rounded window onto the tile. Its huge box-shadow floods the
+   rest of the cell with the grid colour — including the square corners the
+   rounded window leaves behind — so no tile shows through at the four rounded
+   corners. The window's rounded inner edge gives the tile its rounded look,
+   while the cell's square outer edge keeps the grid solid at every junction. */
+.grid-line-cell::before {
+  content: "";
+  position: absolute;
+  inset: calc(var(--grid-line-width) / 2);
+  border-radius: var(--grid-radius);
+  box-shadow: 0 0 0 100vmax currentColor;
+  pointer-events: none;
+}
+
+/* Contact hides the grid for a clean form surface. */
+.stage.is-contact .grid-line-layer {
+  opacity: 0;
+}
+
+/* But the moment contact starts leaving, bring the grid back at once so the
+   tiles slide with the grid visible (the destination screen is revealed with
+   its grid) instead of the slide starting grid-less. is-contact-exit wins over
+   is-contact (both classes are present during the exit). */
+.stage.is-contact-exit .grid-line-layer {
+  opacity: 1;
+  /* Snap to visible (no opacity fade) while keeping the colour easing. */
+  transition: color var(--restore-ms) linear;
+}
+
+.panel {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  /* The cell paints the screen colour behind the moving surface. That fills
+     rounded corners at rest, while clipping an opening tile inside its cell. */
+  overflow: hidden;
+  background: var(--layer-bg, var(--current-bg));
+  transition: background-color var(--grid-hide-ms) ease;
+}
+
+.panel-surface {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: transparent;
+  transform: translate(0, 0);
+  transition: transform 300ms cubic-bezier(0.32, 0.72, 0.2, 1);
+  will-change: transform;
+}
+
+.panel-surface::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: 10px;
+  background: var(--layer-bg, var(--current-bg));
+  pointer-events: none;
+}
+
+.panel-content {
+  position: absolute;
+  inset: auto;
+  top: var(--content-top);
+  left: var(--content-left);
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: var(--stage-width);
+  height: var(--stage-height);
+  pointer-events: none;
+}
+
+.panel-title {
+  display: block;
+  max-width: min(92vw, 1280px);
+  padding: 0 4vw;
+  color: var(--layer-fg, var(--current-fg));
+  text-align: center;
+  font-size: clamp(4.25rem, 15vw, 14rem);
+  font-weight: 800;
+  line-height: 0.9;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+  user-select: none;
+  transition: opacity 220ms ease;
+}
+
+.panel.is-open {
+  background: transparent;
+  pointer-events: none;
+  /* Clear the cell background immediately as it opens so the screen underneath
+     is revealed at once (the background-color transition must not slow this). */
+  transition: none;
+}
+
+.panel.is-closing {
+  background: transparent;
+}
+
+.panel.is-open .panel-surface {
+  transform: var(--tile-transform, translateX(calc(-100% - 2px)));
+}
+
+.panel-layer.is-resetting .panel {
+  transition: none;
+}
+
+.panel-layer.is-resetting .panel-surface {
+  transition: none;
+}
+
+.panel-layer.is-resetting .panel-title {
+  transition: none;
+}
+
+/* ----- Detail screens ----- */
+
+.detail-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  padding:
+    clamp(1.5rem, 4vw, 4rem)
+    clamp(3.75rem, 9vw, 7rem)
+    clamp(1.5rem, 4vw, 4rem)
+    clamp(1.5rem, 4vw, 4rem);
+  color: var(--current-fg);
+  opacity: 0;
+  transform: translateY(22px);
+  pointer-events: none;
+  transition:
+    opacity 520ms ease 260ms,
+    transform 620ms cubic-bezier(0.22, 0.61, 0.21, 1) 260ms;
+  user-select: none;
+  will-change: opacity, transform;
+}
+
+.stage.has-detail > .detail-overlay {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.stage.is-detail-exit > .detail-overlay {
+  opacity: 0;
+  transition: none;
+}
+
+.stage.is-tile-content-active > .detail-overlay {
+  opacity: 0;
+  transition: none;
+}
+
+.detail-panel {
+  width: min(84vw, 1020px);
+  max-height: 82vh;
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(280px, 1.05fr);
+  gap: clamp(1.2rem, 4vw, 3.5rem);
+  align-items: center;
+}
+
+.detail-intro {
+  min-width: 0;
+}
+
+.detail-eyebrow {
+  margin: 0 0 0.85rem;
+  font-size: clamp(0.7rem, 1.1vw, 0.86rem);
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  opacity: 0.74;
+}
+
+.detail-heading {
+  margin: 0;
+  font-size: clamp(2.25rem, 5.2vw, 5rem);
+  line-height: 0.98;
+  font-weight: 800;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.detail-summary {
+  margin: 1.1rem 0 0;
+  max-width: 35rem;
+  font-size: clamp(0.95rem, 1.5vw, 1.15rem);
+  line-height: 1.55;
+  opacity: 0.82;
+  overflow-wrap: anywhere;
+}
+
+.detail-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+  margin-top: clamp(1.2rem, 2.5vw, 2rem);
+}
+
+.detail-stat {
+  min-width: 0;
+  padding-top: 0.7rem;
+  border-top: 1px solid color-mix(in srgb, var(--current-fg) 38%, transparent);
+}
+
+.detail-stat-value,
+.detail-stat-label {
+  display: block;
+}
+
+.detail-stat-value {
+  font-size: clamp(1.25rem, 2.7vw, 2.1rem);
+  line-height: 1;
+}
+
+.detail-stat-label {
+  margin-top: 0.35rem;
+  font-size: clamp(0.66rem, 1vw, 0.78rem);
+  line-height: 1.35;
+  opacity: 0.64;
+  overflow-wrap: anywhere;
+}
+
+.detail-cards {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+}
+
+.detail-card {
+  padding: clamp(0.95rem, 2vw, 1.35rem);
+  border: 1px solid color-mix(in srgb, var(--current-fg) 22%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--current-fg) 7%, transparent);
+}
+
+.detail-card-title {
+  margin: 0;
+  font-size: clamp(0.95rem, 1.6vw, 1.25rem);
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.detail-card-body {
+  margin: 0.55rem 0 0;
+  font-size: clamp(0.78rem, 1.2vw, 0.92rem);
+  line-height: 1.48;
+  opacity: 0.78;
+  overflow-wrap: anywhere;
+}
+
+.panel-detail {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+}
+
+.panel-detail > .detail-overlay {
+  opacity: 1;
+  transform: none;
+  transition: none;
+  will-change: auto;
+}
+
+.stage:is(.is-detail-exit, .is-tile-content-active) .panel-layer-current .panel-detail {
+  opacity: 1;
+}
+
+/* ----- Overlay screen shared state ----- */
+
+/* The big tiled title leaves the center so page-specific content can take over. */
+.stage.has-screen-title .panel-layer-current .panel-title {
+  opacity: 0;
+  transition: none;
+}
+
+.title-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+
+/* Resting pose is the small top-left wordmark. Its starting pose is computed
+   from the tiled title's actual rect and applied as a single transform, so the
+   first visible movement is continuous instead of a layout-property jump. */
+.screen-wordmark {
+  position: absolute;
+  top: 4vh;
+  left: 4vw;
+  margin: 0;
+  width: max-content;
+  max-width: none;
+  padding: 0;
+  color: var(--current-fg);
+  text-align: center;
+  font-size: clamp(1.75rem, 4.5vw, 3rem);
+  font-weight: 800;
+  line-height: 0.9;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+  opacity: 0;
+  transform:
+    translate(var(--title-intro-x), var(--title-intro-y))
+    scale(var(--title-intro-scale));
+  transform-origin: left top;
+  transition: transform 820ms cubic-bezier(0.65, 0, 0.35, 1);
+  user-select: none;
+  will-change: transform, opacity;
+}
+
+.stage.has-screen-title .screen-wordmark {
+  opacity: 1;
+  transform: translate(0, 0) scale(1);
+}
+
+.stage.is-title-exit > .title-overlay .screen-wordmark {
+  opacity: 0;
+  pointer-events: none;
+  transition: none;
+}
+
+.stage.is-tile-content-active > .title-overlay .screen-wordmark {
+  opacity: 0;
+  pointer-events: none;
+  transition: none;
+}
+
+.stage.is-tile-content-restoring > .detail-overlay,
+.stage.is-tile-content-restoring > .title-overlay .screen-wordmark {
+  transition: none;
+}
+
+.panel-screen-title {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+}
+
+.panel-screen-title > .title-overlay {
+  opacity: 1;
+  transition: none;
+}
+
+.panel-screen-title .screen-wordmark {
+  opacity: 1;
+  transform: none;
+  transition: none;
+  will-change: auto;
+}
+
+.stage:is(.is-title-exit, .is-tile-content-active) .panel-layer-current .panel-screen-title {
+  opacity: 1;
+}
+
+/* ----- Contact screen ----- */
+
+.contact-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.contact-form {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: min(90vw, 420px);
+  height: max-content;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  gap: 1.05rem;
+  color: var(--current-fg);
+  opacity: 0;
+  transform: translateY(28px);
+  /* Held back a little so the form arrives after the wordmark has settled. */
+  transition:
+    opacity 700ms ease 450ms,
+    transform 700ms cubic-bezier(0.22, 0.61, 0.21, 1) 450ms;
+  pointer-events: none;
+}
+
+.stage.is-contact .contact-overlay .contact-form {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+/* Leaving contact: hide the single interactive overlay instantly. The tiled
+   per-panel clones (.panel-contact) take over and slide away with the panels,
+   so the content follows the panel animation instead of floating on top. */
+.stage.is-contact-exit .contact-overlay .contact-form {
+  opacity: 0;
+  pointer-events: none;
+  transition: none;
+}
+
+/* Per-panel clone of the contact content. It fills the full-stage panel
+   content (so each tile shows its slice) and is hidden until the leave. */
+.panel-contact {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+}
+
+/* The cloned form sits in its resting pose with no animation; the sliding
+   comes entirely from the panel it lives in. */
+.panel-contact .contact-form {
+  opacity: 1;
+  transform: none;
+  transition: none;
+  will-change: auto;
+}
+
+/* Reveal the tiled clones only while leaving contact, on the collapsing layer. */
+.stage.is-contact-exit .panel-layer-current .panel-contact {
+  opacity: 1;
+}
+
+.contact-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.contact-field > label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+
+.contact-field input,
+.contact-field textarea {
+  width: 100%;
+  padding: 0.7rem 0.85rem;
+  color: var(--current-fg);
+  font: inherit;
+  background: color-mix(in srgb, var(--current-fg) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--current-fg) 32%, transparent);
+  border-radius: 8px;
+  outline: none;
+  transition:
+    border-color 200ms ease,
+    background 200ms ease;
+}
+
+.contact-field textarea {
+  resize: none;
+}
+
+.contact-field input:focus,
+.contact-field textarea:focus {
+  border-color: var(--current-fg);
+  background: color-mix(in srgb, var(--current-fg) 14%, transparent);
+}
+
+.contact-field input.has-error,
+.contact-field textarea.has-error {
+  border-color: #ffb4ab;
+  background: color-mix(in srgb, #ffb4ab 12%, transparent);
+}
+
+.contact-error {
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+  color: #ffb4ab;
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.contact-error:empty {
+  display: none;
+}
+
+.contact-error:not(:empty) {
+  opacity: 1;
+}
+
+.contact-status {
+  margin: 0.2rem 0 0;
+  min-height: 1rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.01em;
+  text-align: center;
+  color: var(--current-fg);
+  opacity: 0;
+  transition: opacity 220ms ease;
+}
+
+.contact-status:not(:empty) {
+  opacity: 0.92;
+}
+
+.contact-status.is-error {
+  color: #ffb4ab;
+}
+
+.contact-submit {
+  margin-top: 0.4rem;
+  padding: 0.8rem 1rem;
+  color: var(--current-fg);
+  font: inherit;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  background: transparent;
+  border: 1px solid var(--current-fg);
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    background 220ms ease,
+    color 220ms ease;
+}
+
+.contact-submit:hover {
+  background: var(--current-fg);
+  color: var(--current-bg);
+}
+
+/* ----- Interaction hints ----- */
+
+.interaction-hints {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+  color: var(--current-fg);
+}
+
+.interaction-hint {
+  position: absolute;
+  left: var(--hint-x, 50vw);
+  top: var(--hint-y, 50vh);
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.96);
+  transition:
+    opacity 260ms ease,
+    transform 260ms ease;
+  pointer-events: none;
+  user-select: none;
+}
+
+.interaction-hint.is-visible {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.interaction-hint svg,
+.hint-scroll-down {
+  display: block;
+  width: 2rem;
+  height: 2rem;
+  stroke-width: 1.8;
+}
+
+.interaction-hint-trace {
+  width: 4rem;
+  height: 4rem;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--current-bg) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--current-fg) 18%, transparent);
+  filter:
+    drop-shadow(0 6px 16px rgba(0, 0, 0, 0.16))
+    drop-shadow(0 0 1px rgba(255, 255, 255, 0.28));
+}
+
+.hint-trace-icon {
+  display: block;
+  animation: traceHintMove 1.85s ease-in-out infinite;
+}
+
+.interaction-hint-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  min-width: 8.9rem;
+  padding: 0.72rem 0.85rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--current-bg) 78%, transparent);
+  border: 1px solid color-mix(in srgb, var(--current-fg) 18%, transparent);
+  filter:
+    drop-shadow(0 8px 22px rgba(0, 0, 0, 0.18))
+    drop-shadow(0 0 1px rgba(255, 255, 255, 0.28));
+}
+
+.hint-cycle-icon {
+  position: relative;
+  width: 2rem;
+  height: 2rem;
+  flex: none;
+}
+
+.hint-cycle-frame {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+
+.hint-cycle-frame-base {
+  animation: hintBaseSwap 2s ease-in-out infinite;
+}
+
+.hint-cycle-frame-active {
+  opacity: 0;
+  animation: hintActiveSwap 2s ease-in-out infinite;
+}
+
+.hint-cycle-icon-wheel .hint-cycle-frame-base,
+.hint-cycle-icon-wheel .hint-cycle-frame-active {
+  animation-delay: 0.5s;
+}
+
+.hint-scroll-down {
+  color: currentColor;
+  background: currentColor;
+  mask: url("./mouse-scroll-down.svg") center / contain no-repeat;
+  -webkit-mask: url("./mouse-scroll-down.svg") center / contain no-repeat;
+}
+
+.hint-separator {
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+  opacity: 0.58;
+}
+
+@keyframes traceHintMove {
+  0%,
+  100% {
+    transform: translate(-0.62rem, 0.46rem) rotate(-8deg);
+  }
+
+  48% {
+    transform: translate(0.72rem, -0.52rem) rotate(-8deg);
+  }
+
+  68% {
+    transform: translate(0.32rem, -0.22rem) rotate(-8deg);
+  }
+}
+
+@keyframes hintBaseSwap {
+  0%,
+  30% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  48%,
+  82% {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes hintActiveSwap {
+  0%,
+  30% {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+
+  48%,
+  82% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+}
+
+/* ----- Page position indicator ----- */
+
+/* A vertical list of screens pinned to the right. The whole track slides so
+   the current screen sits at the vertical center; the other screens show their
+   titles faintly and act as jump links. */
+.page-indicator {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: clamp(0.9rem, 2vw, 1.75rem);
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+
+.indicator-track {
+  --item-h: 2.3rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  /* Stacked dark + light halos keep the markers and titles legible on any
+     background, including mid-transition when colours blend at the edge. */
+  filter:
+    drop-shadow(0 0 1.5px rgba(0, 0, 0, 0.5))
+    drop-shadow(0 0 1.5px rgba(255, 255, 255, 0.3));
+  /* transform is set inline from JS (offset * --item-h) so the slide animates. */
+  transition: transform 600ms cubic-bezier(0.22, 0.61, 0.21, 1);
+}
+
+.indicator-item {
+  height: var(--item-h);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.65rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--current-fg);
+  font: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.indicator-title {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  opacity: 0.32;
+  transition:
+    opacity 320ms ease,
+    color 600ms ease;
+}
+
+.indicator-item:hover .indicator-title {
+  opacity: 0.75;
+}
+
+/* The current screen's title is hidden — its circle marker takes its place. */
+.indicator-item.is-current .indicator-title {
+  opacity: 0;
+}
+
+/* Every screen gets a faint circle; the current one is solid and full-size. */
+.indicator-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--current-fg);
+  opacity: 0.3;
+  transform: scale(0.62);
+  transition:
+    opacity 320ms ease,
+    transform 320ms ease,
+    background 600ms ease;
+}
+
+.indicator-item.is-current .indicator-dot {
+  opacity: 1;
+  transform: scale(1);
+}
+
+@media (max-width: 760px), (hover: none) and (pointer: coarse) and (max-width: 1180px) {
+  .page-indicator {
+    top: auto;
+    right: 0;
+    bottom: max(0.85rem, env(safe-area-inset-bottom));
+    left: 0;
+    height: 1.8rem;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .indicator-track {
+    --item-h: 0rem;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 0.55rem;
+  }
+
+  .indicator-item {
+    width: 1.8rem;
+    height: 1.8rem;
+    justify-content: center;
+    gap: 0;
+  }
+
+  .indicator-title {
+    display: none;
+  }
+
+  .detail-overlay {
+    padding:
+      clamp(5rem, 9vh, 6.2rem)
+      clamp(1.15rem, 4vw, 3rem)
+      max(4.8rem, calc(3.6rem + env(safe-area-inset-bottom)))
+      clamp(1.15rem, 4vw, 3rem);
+  }
+
+  .detail-panel {
+    max-height: calc(100vh - 9.8rem);
+  }
+}
+
+@media (max-width: 640px) {
+  .screen-title,
+  .panel-title {
+    font-size: clamp(3.25rem, 18vw, 7rem);
+  }
+
+  .detail-overlay {
+    padding:
+      5rem
+      1.15rem
+      max(4.8rem, calc(3.6rem + env(safe-area-inset-bottom)))
+      1.15rem;
+  }
+
+  .detail-panel {
+    width: 100%;
+    max-height: calc(100vh - 9.8rem);
+    grid-template-columns: 1fr;
+    gap: 0.9rem;
+  }
+
+  .detail-heading {
+    font-size: clamp(2rem, 10vw, 3.35rem);
+  }
+
+  .detail-summary {
+    margin-top: 0.8rem;
+    font-size: 0.86rem;
+    line-height: 1.45;
+  }
+
+  .detail-stats {
+    margin-top: 0.9rem;
+  }
+
+  .detail-cards {
+    gap: 0.55rem;
+  }
+
+  .detail-card {
+    padding: 0.72rem 0.78rem;
+  }
+
+  .detail-card-body {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel-surface {
+    transition-duration: 1ms;
+  }
+
+  .hint-trace-icon,
+  .hint-cycle-frame-base,
+  .hint-cycle-frame-active {
+    animation: none;
+  }
+
+  .hint-cycle-frame-base {
+    opacity: 1;
+  }
+
+  .hint-cycle-frame-active {
+    opacity: 0;
+  }
+}

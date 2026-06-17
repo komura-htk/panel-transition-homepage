@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sample Homepage</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="stage" id="stage" aria-label="Sample homepage">
+      <section class="screen screen-next" id="nextScreen" aria-hidden="true">
+        <p class="sr-only" id="nextTitle">ABOUT</p>
+      </section>
+
+      <div class="panel-layer panel-layer-next" id="nextPanelLayer" aria-hidden="true"></div>
+      <div class="panel-layer panel-layer-current" id="panelLayer" aria-hidden="true"></div>
+      <div class="grid-line-layer" id="gridLineLayer" aria-hidden="true"></div>
+
+      <div class="detail-overlay" id="detailOverlay" aria-hidden="true"></div>
+
+      <div class="title-overlay" id="titleOverlay" aria-hidden="true">
+        <p class="screen-wordmark" id="screenWordmark"></p>
+      </div>
+
+      <div class="contact-overlay" id="contactOverlay">
+        <form class="contact-form" id="contactForm" novalidate>
+          <div class="contact-field">
+            <label for="cf-name">お名前</label>
+            <input id="cf-name" type="text" name="name" autocomplete="off"
+              aria-describedby="cf-name-error" />
+            <span class="contact-error" id="cf-name-error"></span>
+          </div>
+          <div class="contact-field">
+            <label for="cf-email">メールアドレス</label>
+            <input id="cf-email" type="email" name="email" autocomplete="off"
+              aria-describedby="cf-email-error" />
+            <span class="contact-error" id="cf-email-error"></span>
+          </div>
+          <div class="contact-field">
+            <label for="cf-message">ご相談内容</label>
+            <textarea id="cf-message" name="message" rows="4"
+              aria-describedby="cf-message-error"></textarea>
+            <span class="contact-error" id="cf-message-error"></span>
+          </div>
+          <button type="submit" class="contact-submit">送信</button>
+          <p class="contact-status" id="contactStatus" role="status" aria-live="polite"></p>
+        </form>
+      </div>
+
+      <nav class="page-indicator" id="pageIndicator" aria-label="Page position"></nav>
+
+      <h1 class="sr-only" id="currentTitle">SAMPLE</h1>
+    </main>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "https://unpkg.com/lucide@latest/dist/esm/lucide.js": "./lucide-shim.js"
+        }
+      }
+    </script>
+    <script type="module" src="./script.js"></script>
+  </body>
+</html>
