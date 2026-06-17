@@ -55,6 +55,9 @@ body {
   isolation: isolate;
   cursor: default;
   background: var(--current-bg);
+  /* Own touch gestures so a swipe reaches our pointer handlers instead of
+     scrolling / pull-to-refresh on mobile. */
+  touch-action: none;
   --restore: 0;
   transition: --restore var(--restore-ms) linear;
 }
@@ -135,7 +138,7 @@ body {
 .grid-line-layer {
   position: absolute;
   inset: 0;
-  z-index: 3;
+  z-index: 6;
   display: grid;
   grid-template-columns: repeat(var(--grid-cols), 1fr);
   grid-template-rows: repeat(var(--grid-rows), 1fr);
@@ -171,18 +174,12 @@ body {
   pointer-events: none;
 }
 
-/* Contact hides the grid for a clean form surface. */
 .stage.is-contact .grid-line-layer {
   opacity: 0;
 }
 
-/* But the moment contact starts leaving, bring the grid back at once so the
-   tiles slide with the grid visible (the destination screen is revealed with
-   its grid) instead of the slide starting grid-less. is-contact-exit wins over
-   is-contact (both classes are present during the exit). */
 .stage.is-contact-exit .grid-line-layer {
   opacity: 1;
-  /* Snap to visible (no opacity fade) while keeping the colour easing. */
   transition: color var(--restore-ms) linear;
 }
 
@@ -713,12 +710,33 @@ body {
   transform: translate(-50%, -50%) scale(1);
 }
 
-.interaction-hint svg,
-.hint-scroll-down {
+.hint-icon {
   display: block;
   width: 2rem;
   height: 2rem;
-  stroke-width: 1.8;
+  color: currentColor;
+  background: currentColor;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+}
+
+.hint-icon-mouse-pointer-2 {
+  mask-image: url("./mouse-pointer-2.svg");
+  -webkit-mask-image: url("./mouse-pointer-2.svg");
+}
+
+.hint-icon-mouse {
+  mask-image: url("./mouse.svg");
+  -webkit-mask-image: url("./mouse.svg");
+}
+
+.hint-icon-mouse-left {
+  mask-image: url("./mouse-left.svg");
+  -webkit-mask-image: url("./mouse-left.svg");
 }
 
 .interaction-hint-trace {
@@ -782,11 +800,9 @@ body {
   animation-delay: 0.5s;
 }
 
-.hint-scroll-down {
-  color: currentColor;
-  background: currentColor;
-  mask: url("./mouse-scroll-down.svg") center / contain no-repeat;
-  -webkit-mask: url("./mouse-scroll-down.svg") center / contain no-repeat;
+.hint-icon-mouse-scroll-down {
+  mask-image: url("./mouse-scroll-down.svg");
+  -webkit-mask-image: url("./mouse-scroll-down.svg");
 }
 
 .hint-separator {

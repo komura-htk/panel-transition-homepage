@@ -1,10 +1,3 @@
-import {
-  createIcons,
-  mousePointer2,
-  mouse,
-  mouseLeft,
-} from "https://unpkg.com/lucide@latest/dist/esm/lucide.js";
-
 const TRANSITION_MS = 300;
 const AUTO_CLOSE_MS = 2000;
 const CLICK_WAVE_DELAY_MS = 42;
@@ -60,6 +53,10 @@ const screens = [
     fg: "#f4ecee",
   },
 ];
+
+const screenSlugMap = new Map(
+  screens.map((screen, index) => [screen.label.toLowerCase(), index]),
+);
 
 const screenDetails = [
   null,
@@ -181,12 +178,16 @@ let openedPanels = new Set();
 let autoCloseTimers = new Map();
 let closingTimers = new Map();
 let transitionTimer = 0;
+// Timestamp (performance.now) when the current screen's entrance transitions
+// began, used to resume them seamlessly inside tile-bound clones.
+let contentEntranceStart = 0;
 let isTransitioning = false;
 let wheelLocked = false;
 let wheelUnlockTimer = 0;
 let lastWheelAt = 0;
 let suppressedWheelEvents = 0;
 let transitionCompletedAt = 0;
+let queuedHistoryTarget = null;
 const hintState = {
   root: null,
   trace: null,
@@ -210,6 +211,76 @@ const hintState = {
 
 function nextIndex() {
   return (currentIndex + 1) % screens.length;
+}
+
+function screenSlug(index) {
+  return screens[index].label.toLowerCase();
+}
+
+function screenHash(index) {
+  return `#${screenSlug(index)}`;
+}
+
+function indexFromHash(hash = window.location.hash) {
+  let slug = hash.replace(/^#/, "");
+  try {
+    slug = decodeURIComponent(slug);
+  } catch {
+    return -1;
+  }
+  slug = slug.trim().toLowerCase();
+  return screenSlugMap.has(slug) ? screenSlugMap.get(slug) : -1;
+}
+
+function writeScreenHistory(index, mode = "push") {
+  const state = {
+    screenIndex: index,
+    screen: screenSlug(index),
+  };
+  const hash = screenHash(index);
+
+  if (window.location.hash === hash && history.state?.screenIndex === index) {
+    return;
+  }
+
+  if (mode === "replace") {
+    history.replaceState(state, "", hash);
+    return;
+  }
+
+  history.pushState(state, "", hash);
+}
+
+function syncInitialScreenFromHash() {
+  const index = indexFromHash();
+  if (index >= 0) {
+    currentIndex = index;
+  }
+  pendingTarget = currentIndex;
+  writeScreenHistory(currentIndex, "replace");
+}
+
+function syncScreenFromHistory() {
+  const targetIndex = indexFromHash();
+  if (targetIndex < 0) {
+    writeScreenHistory(currentIndex, "replace");
+    return;
+  }
+
+  writeScreenHistory(targetIndex, "replace");
+
+  if (isTransitioning) {
+    queuedHistoryTarget = targetIndex;
+    return;
+  }
+
+  if (targetIndex === currentIndex) {
+    return;
+  }
+
+  startTransition("scroll", null, targetIndex > currentIndex ? 1 : -1, targetIndex, {
+    updateHistory: false,
+  });
 }
 
 function setTheme() {
@@ -290,9 +361,9 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function createLucidePlaceholder(name) {
-  const icon = document.createElement("i");
-  icon.dataset.lucide = name;
+function createHintIcon(name) {
+  const icon = document.createElement("span");
+  icon.className = `hint-icon hint-icon-${name}`;
   icon.setAttribute("aria-hidden", "true");
   return icon;
 }
@@ -305,8 +376,8 @@ function createCycleIcon(baseName, activeName) {
   root.className = "hint-cycle-icon";
   base.className = "hint-cycle-frame hint-cycle-frame-base";
   active.className = "hint-cycle-frame hint-cycle-frame-active";
-  base.append(createLucidePlaceholder(baseName));
-  active.append(createLucidePlaceholder(activeName));
+  base.append(createHintIcon(baseName));
+  active.append(createHintIcon(activeName));
   root.append(base, active);
 
   return root;
@@ -319,8 +390,9 @@ function createWheelHintIcon() {
 
   root.className = "hint-cycle-icon hint-cycle-icon-wheel";
   base.className = "hint-cycle-frame hint-cycle-frame-base";
-  active.className = "hint-cycle-frame hint-cycle-frame-active hint-scroll-down";
-  base.append(createLucidePlaceholder("mouse"));
+  active.className = "hint-cycle-frame hint-cycle-frame-active";
+  base.append(createHintIcon("mouse"));
+  active.append(createHintIcon("mouse-scroll-down"));
   root.append(base, active);
 
   return root;
@@ -338,7 +410,7 @@ function buildInteractionHints() {
 
   trace.className = "interaction-hint interaction-hint-trace";
   traceIcon.className = "hint-trace-icon";
-  traceIcon.append(createLucidePlaceholder("mouse-pointer-2"));
+  traceIcon.append(createHintIcon("mouse-pointer-2"));
   trace.append(traceIcon);
 
   action.className = "interaction-hint interaction-hint-action";
@@ -352,15 +424,6 @@ function buildInteractionHints() {
   hintState.root = root;
   hintState.trace = trace;
   hintState.action = action;
-
-  createIcons({ icons: { mousePointer2, mouse, mouseLeft } });
-  createIcons({
-    icons: {
-      MousePointer2: mousePointer2,
-      Mouse: mouse,
-      MouseLeft: mouseLeft,
-    },
-  });
 }
 
 function setHintPosition(element, x, y) {
@@ -596,6 +659,9 @@ function applyScreenState() {
   stage.classList.toggle("has-detail", hasDetailScreen(currentIndex));
   stage.classList.toggle("has-screen-title", hasScreenWordmark(currentIndex));
   stage.classList.toggle("is-contact", currentIndex === CONTACT_INDEX);
+  // Stamp when the screen's entrance transitions begin, so clones bound to the
+  // tiles mid-entrance can pick the animation up at the exact same progress.
+  contentEntranceStart = performance.now();
 }
 
 function updateScreenWordmark(index = currentIndex) {
@@ -1045,41 +1111,79 @@ function deactivatePanelBoundContentWhenIdle() {
   });
 }
 
-// Entrance transitions (delays dropped, since the animation is already under
-// way) for the content that gets bound to the tiles. Used to resume that
-// animation inside the clones.
-const PANEL_CONTENT_RESUME = [
+// Each tile-bound content clone, described by its intro (from) pose and its
+// original entrance transition. `transition(elapsed)` rebuilds that transition
+// with each segment's delay shifted back by how long the live entrance has been
+// running, so a negative delay makes the clone resume exactly where the live
+// element is rather than restarting.
+const CONTENT_CONTINUATION = [
   {
     selector: ".panel-screen-title .screen-wordmark",
-    transition: "transform 820ms cubic-bezier(0.65, 0, 0.35, 1)",
+    // Wordmark opacity is instant (only transform animates), so leave it alone.
+    fromOpacity: null,
+    fromTransform:
+      "translate(var(--title-intro-x), var(--title-intro-y)) scale(var(--title-intro-scale))",
+    transition: (elapsed) =>
+      `transform 820ms cubic-bezier(0.65, 0, 0.35, 1) ${-elapsed}ms`,
   },
   {
     selector: ".panel-detail > .detail-overlay",
-    transition: "opacity 520ms ease, transform 620ms cubic-bezier(0.22, 0.61, 0.21, 1)",
+    fromOpacity: "0",
+    fromTransform: "translateY(22px)",
+    transition: (elapsed) =>
+      `opacity 520ms ease ${260 - elapsed}ms, transform 620ms cubic-bezier(0.22, 0.61, 0.21, 1) ${260 - elapsed}ms`,
   },
   {
     selector: ".panel-contact .contact-form",
-    transition: "opacity 700ms ease, transform 700ms cubic-bezier(0.22, 0.61, 0.21, 1)",
+    fromOpacity: "0",
+    fromTransform: "translateY(28px)",
+    transition: (elapsed) =>
+      `opacity 700ms ease ${450 - elapsed}ms, transform 700ms cubic-bezier(0.22, 0.61, 0.21, 1) ${450 - elapsed}ms`,
   },
 ];
 
-// The per-tile clones are frozen at the live element's current state (see the
-// copy*ViewState helpers) so the swap from the floating overlay is seamless.
-// Re-enable the entrance transition and drop the captured inline transform /
-// opacity so each clone animates on to its settled pose — i.e. the screen's
-// own animation keeps running inside the sliding tiles instead of pausing. If
-// the live state was already settled this is a no-op (no value change).
+// Keep the screen's entrance animation running inside the per-tile clones from
+// the exact point the live element had reached. The clones are first pinned to
+// their intro pose, then transitioned to settled along the original curve but
+// offset by a negative delay equal to the elapsed entrance time. That makes the
+// motion continuous: no restart, no slowdown, no slight rewind when content
+// binds to the tiles mid-entrance. Already-settled content snaps to settled.
 function resumePanelContentEntrance() {
   window.requestAnimationFrame(() => {
+    const elapsed = Math.max(0, performance.now() - contentEntranceStart);
+
+    // Pass 1: pin every clone to its intro pose with no transition.
     panels.forEach((panel) => {
-      PANEL_CONTENT_RESUME.forEach(({ selector, transition }) => {
-        const el = panel.querySelector(selector);
+      CONTENT_CONTINUATION.forEach((cfg) => {
+        const el = panel.querySelector(cfg.selector);
         if (!el) {
           return;
         }
-        el.style.transition = transition;
+        el.style.transition = "none";
+        if (cfg.fromOpacity !== null) {
+          el.style.opacity = cfg.fromOpacity;
+        }
+        el.style.transform = cfg.fromTransform;
+      });
+    });
+
+    // One reflow so the intro pose is registered as the transition's start.
+    if (panelLayer) {
+      panelLayer.getBoundingClientRect();
+    }
+
+    // Pass 2: animate to settled along the original curve, offset by -elapsed.
+    panels.forEach((panel) => {
+      CONTENT_CONTINUATION.forEach((cfg) => {
+        const el = panel.querySelector(cfg.selector);
+        if (!el) {
+          return;
+        }
+        el.style.transition = cfg.transition(elapsed);
+        if (cfg.fromOpacity !== null) {
+          el.style.opacity = "";
+        }
         el.style.transform = "";
-        el.style.opacity = "";
       });
     });
   });
@@ -1766,11 +1870,31 @@ function completeTransition() {
       isTransitioning = false;
       transitionCompletedAt = performance.now();
       releaseWheelLockWhenIdle();
+
+      const historyTarget = queuedHistoryTarget;
+      queuedHistoryTarget = null;
+      if (historyTarget !== null && historyTarget !== currentIndex) {
+        window.requestAnimationFrame(() => {
+          startTransition(
+            "scroll",
+            null,
+            historyTarget > currentIndex ? 1 : -1,
+            historyTarget,
+            { updateHistory: false },
+          );
+        });
+      }
     });
   });
 }
 
-function startTransition(mode, originIndex = null, direction = 1, targetIndex = null) {
+function startTransition(
+  mode,
+  originIndex = null,
+  direction = 1,
+  targetIndex = null,
+  options = {},
+) {
   if (isTransitioning) {
     return;
   }
@@ -1803,6 +1927,9 @@ function startTransition(mode, originIndex = null, direction = 1, targetIndex = 
     targetIndex !== null
       ? targetIndex
       : (currentIndex + direction + screens.length) % screens.length;
+  if (options.updateHistory !== false) {
+    writeScreenHistory(pendingTarget);
+  }
   // The position indicator commits to the destination at the trigger moment
   // (this click/scroll/threshold), not when the tiles finish.
   updateIndicator(pendingTarget);
@@ -1843,6 +1970,14 @@ function startTransition(mode, originIndex = null, direction = 1, targetIndex = 
 }
 
 stage.addEventListener("click", (event) => {
+  if (suppressNextClick) {
+    suppressNextClick = false;
+    window.clearTimeout(suppressClickTimer);
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+
   if (isTransitioning || currentIndex === CONTACT_INDEX) {
     return;
   }
@@ -1851,6 +1986,12 @@ stage.addEventListener("click", (event) => {
 });
 
 stage.addEventListener("pointermove", (event) => {
+  // Touch move is classified below: vertical movement navigates, while
+  // non-vertical movement reveals panels along the finger path.
+  if (event.pointerType === "touch") {
+    handleTouchMove(event);
+    return;
+  }
   trackHintPointer(event.clientX, event.clientY);
   hoverAlongPath(event.clientX, event.clientY);
 });
@@ -1858,6 +1999,122 @@ stage.addEventListener("pointermove", (event) => {
 stage.addEventListener("pointerleave", () => {
   lastHoverPoint = null;
   lastHoverIndex = -1;
+});
+
+// Touch vertical swipes step screens; non-vertical touch drags reveal panels
+// just like a mouse drag. touch-action: none on the stage keeps the browser
+// from hijacking the gesture so the pointer events arrive cleanly.
+const SWIPE_MIN_DISTANCE = 45;
+const TOUCH_PANEL_DRAG_MIN_DISTANCE = 12;
+let swipeStartX = 0;
+let swipeStartY = 0;
+let swipeTracking = false;
+let touchGestureMode = null;
+let suppressNextClick = false;
+let suppressClickTimer = 0;
+
+function suppressUpcomingClick() {
+  suppressNextClick = true;
+  window.clearTimeout(suppressClickTimer);
+  suppressClickTimer = window.setTimeout(() => {
+    suppressNextClick = false;
+  }, 800);
+}
+
+function resetTouchGesture() {
+  swipeTracking = false;
+  touchGestureMode = null;
+  lastHoverPoint = null;
+  lastHoverIndex = -1;
+}
+
+function startTouchPanelDrag(clientX, clientY) {
+  if (touchGestureMode !== "panel") {
+    touchGestureMode = "panel";
+    suppressUpcomingClick();
+    lastHoverPoint = null;
+    lastHoverIndex = -1;
+    hoverAlongPath(swipeStartX, swipeStartY);
+  }
+
+  hoverAlongPath(clientX, clientY);
+}
+
+function handleTouchMove(event) {
+  if (!swipeTracking || isTransitioning) {
+    return;
+  }
+
+  const dx = event.clientX - swipeStartX;
+  const dy = event.clientY - swipeStartY;
+  const absX = Math.abs(dx);
+  const absY = Math.abs(dy);
+  const distance = Math.max(absX, absY);
+
+  if (touchGestureMode === "panel") {
+    startTouchPanelDrag(event.clientX, event.clientY);
+    return;
+  }
+
+  if (distance < TOUCH_PANEL_DRAG_MIN_DISTANCE) {
+    return;
+  }
+
+  if (absY > absX) {
+    touchGestureMode = "vertical";
+    return;
+  }
+
+  startTouchPanelDrag(event.clientX, event.clientY);
+}
+
+stage.addEventListener("pointerdown", (event) => {
+  if (event.pointerType !== "touch") {
+    return;
+  }
+  swipeStartX = event.clientX;
+  swipeStartY = event.clientY;
+  swipeTracking = true;
+  touchGestureMode = null;
+  lastHoverPoint = null;
+  lastHoverIndex = -1;
+});
+
+stage.addEventListener("pointerup", (event) => {
+  if (event.pointerType !== "touch" || !swipeTracking) {
+    return;
+  }
+
+  const dx = event.clientX - swipeStartX;
+  const dy = event.clientY - swipeStartY;
+  const absX = Math.abs(dx);
+  const absY = Math.abs(dy);
+  const isVertical = absY > absX;
+
+  if (
+    touchGestureMode === "panel" ||
+    (!isVertical && Math.max(absX, absY) >= TOUCH_PANEL_DRAG_MIN_DISTANCE)
+  ) {
+    startTouchPanelDrag(event.clientX, event.clientY);
+    resetTouchGesture();
+    return;
+  }
+
+  resetTouchGesture();
+
+  if (!isVertical || absY < SWIPE_MIN_DISTANCE) {
+    return;
+  }
+
+  suppressUpcomingClick();
+  navigateStep(dy < 0 ? 1 : -1);
+});
+
+stage.addEventListener("pointercancel", () => {
+  if (touchGestureMode === "panel") {
+    suppressUpcomingClick();
+  }
+  resetTouchGesture();
 });
 
 stage.addEventListener(
@@ -1883,7 +2140,32 @@ stage.addEventListener(
   { passive: false },
 );
 
+function isInputShortcutTarget(target) {
+  if (!(target instanceof Element)) {
+    return false;
+  }
+
+  return Boolean(
+    target.closest(
+      [
+        "input",
+        "textarea",
+        "select",
+        "button",
+        "[contenteditable='true']",
+        "[role='textbox']",
+        "[role='combobox']",
+        "[role='searchbox']",
+      ].join(","),
+    ),
+  );
+}
+
 window.addEventListener("keydown", (event) => {
+  if (event.defaultPrevented || event.isComposing || isInputShortcutTarget(event.target)) {
+    return;
+  }
+
   let direction = 0;
   if (event.key === "ArrowDown" || event.key === "ArrowRight" || event.key === " ") {
     direction = 1;
@@ -1896,6 +2178,9 @@ window.addEventListener("keydown", (event) => {
   event.preventDefault();
   navigateStep(direction);
 });
+
+window.addEventListener("popstate", syncScreenFromHistory);
+window.addEventListener("hashchange", syncScreenFromHistory);
 
 // All fields are required; email also has to look like an address. The form is
 // a demo and never actually submits.
@@ -1983,6 +2268,7 @@ window.addEventListener("resize", () => {
   }, 120);
 });
 
+syncInitialScreenFromHash();
 setTheme();
 buildIndicator();
 applyScreenState();
